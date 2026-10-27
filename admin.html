@@ -126,14 +126,14 @@ var DEMO_NAME = "Драйв Бум";
     var from = S.date ? add(S.date, -7) : null;
     api({ action: "list", from: S.today ? S.today : undefined, to: S.today ? add(S.today, 30) : undefined }).then(function (r) {
       if (!r.ok) { KEY = ""; try { localStorage.removeItem("bk_key"); } catch (e) {} return login(r.error); }
-      S.settings = r.settings; S.services = r.services; S.today = S.today || r.today;
-      if (!S.date) S.date = S.today;
+      S.settings = r.settings; S.services = r.services; S.today = r.today;
+      if (!S.date || S.date < S.today) S.date = S.today;
       return api({ action: "list", from: S.today, to: add(S.today, Math.max(14, r.settings.days)) }).then(function (r2) {
-        S.list = r2.list || []; render();
+        S.list = r2.list || []; S.err = false; S.at = hhmm(new Date().getHours() * 60 + new Date().getMinutes()); render();
         var seen = false; try { seen = !!localStorage.getItem("bk_tour"); } catch (e) {}
         if (!seen && !window.NO_TOUR) setTimeout(tour, 400);
       });
-    }).catch(function () { app.innerHTML = '<div class="login"><h1>Нет связи</h1><p>Проверьте интернет и обновите страницу.</p></div>'; });
+    }).catch(function () { if (S.list) { S.err = true; render(); return; } app.innerHTML = '<div class="login"><h1>Нет связи</h1><p>Проверьте интернет — страница попробует снова через минуту.</p></div>'; });
   }
 
   function render() {
@@ -159,7 +159,8 @@ var DEMO_NAME = "Драйв Бум";
     }
     app.innerHTML = '<div class="top"><h1>' + esc(st.name || "Расписание") + '</h1><small>Записи с сайта и добавленные вручную</small><button class="help" id="help" aria-label="Обучение">?</button></div>' +
       '<div class="days">' + days + "</div><main><div class=\"stat\"><span>Записей: <b>" + live.length + "</b></span>" +
-      (hrs ? "<span>Работаем: <b>" + hrs[0] + "–" + hrs[1] + "</b></span>" : "") + '<span><a href="#" id="rf" style="color:var(--a)">обновить</a></span></div>' + body + "</main>" +
+      (hrs ? "<span>Работаем: <b>" + hrs[0] + "–" + hrs[1] + "</b></span>" : "") + '<span><a href="#" id="rf" style="color:var(--a)">обновить</a> <small style="color:' + (S.err ? '#ff5a52">нет связи, пробую снова' : 'var(--dim)">обновлено в ' + S.at) + '</small></span>' +
+      ("wakeLock" in navigator ? '<span><a href="#" id="wk" style="color:var(--a)">' + (WAKE ? "экран не гаснет ✓" : "не гасить экран") + "</a></span>" : "") + '</div>' + body + "</main>" +
       '<button class="fab" id="addb">+ Добавить запись</button><div class="modal" id="m"></div>';
   }
   function card(b) {
@@ -202,7 +203,7 @@ var DEMO_NAME = "Драйв Бум";
       { sel: ".row .bk .acts", h: "Кнопки записи", p: "«Позвонить» и «WhatsApp» — связаться в одно нажатие. «Готово» — когда сделали. «Отменить» — время снова станет свободным на сайте." },
       { sel: ".row.free", h: "Свободное время", p: "Такое окошко клиент может занять на сайте. Как только кто-то запишется — оно пропадёт у всех." },
       { sel: "#addb", h: "Позвонили по телефону?", p: "Жмите «Добавить запись» и внесите её — время сразу закроется на сайте, и двое на одно время не приедут." },
-      { sel: "#rf", h: "Обновить", p: "Расписание обновляется само раз в минуту. Хотите прямо сейчас — нажмите «обновить»." },
+      { sel: "#rf", h: "Обновить", p: "Расписание обновляется само раз в минуту, нажимать ничего не нужно. Хотите прямо сейчас — нажмите «обновить»." },
       { sel: "#help", h: "Если забыли", p: "Нажмите «?» — покажу всё заново." },
       { h: "Последний шаг: на экран телефона", p: "iPhone: внизу «Поделиться» → «На экран „Домой“». Android: меню ⋮ → «Добавить на главный экран». Расписание будет открываться как приложение, пароль вводить больше не нужно." }
     ].filter(function (st) { return !st.sel || document.querySelector(st.sel); });
@@ -230,10 +231,23 @@ var DEMO_NAME = "Драйв Бум";
     else if (b.dataset.s) { if (b.dataset.s === "отменена" && !confirm("Отменить запись?")) return; api({ action: "status", id: b.dataset.id, status: b.dataset.s }).then(load); }
     else if (b.id === "addb") addForm();
     else if (b.id === "rf") { e.preventDefault(); load(); }
+    else if (b.id === "wk") { e.preventDefault(); WAKE = !WAKE; try { localStorage.setItem("bk_wake", WAKE ? "1" : ""); } catch (e2) {} keepAwake(); render(); }
     else if (b.id === "help") tour();
   });
   if ((!ENDPOINT && !DEMO) || !KEY) login(""); else load();
-  setInterval(function () { if (KEY && (ENDPOINT || DEMO) && !document.getElementById("m")?.classList.contains("on")) load(); }, 60000);
+  // Планшет на стойке: обновляемся раз в минуту и сразу, как только экран снова включили.
+  function busy() { return document.getElementById("m")?.classList.contains("on") || document.querySelector(".tour-card"); }
+  function auto() { if (KEY && (ENDPOINT || DEMO) && !document.hidden && !busy()) load(); }
+  setInterval(auto, 60000);
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) { auto(); keepAwake(); } });
+  // «Не гасить экран» — для планшета, который весь день стоит с расписанием
+  var WAKE = false, lock = null; try { WAKE = !!localStorage.getItem("bk_wake"); } catch (e) {}
+  function keepAwake() {
+    if (!("wakeLock" in navigator)) return;
+    if (WAKE && !lock && !document.hidden) navigator.wakeLock.request("screen").then(function (l) { lock = l; l.addEventListener("release", function () { lock = null; }); }).catch(function () {});
+    if (!WAKE && lock) { lock.release(); lock = null; }
+  }
+  keepAwake();
 })();
 </script>
 </body>

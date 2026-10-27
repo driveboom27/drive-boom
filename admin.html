@@ -19,6 +19,8 @@
   main { padding: 12px 16px; max-width: 720px; margin: 0 auto; }
   .stat { display: flex; gap: 14px; color: var(--dim); font-size: 14px; margin: 6px 0 12px; flex-wrap: wrap; }
   .stat b { color: var(--tx); }
+  .nb { display: block; background: var(--a); color: var(--oa); font-weight: 700; border-radius: 12px; padding: 12px 14px; margin: 6px 0 10px; text-decoration: none; animation: nbp 1s ease-in-out 6; }
+  @keyframes nbp { 50% { opacity: .55; } }
   .row { display: grid; grid-template-columns: 62px 1fr; gap: 12px; padding: 12px 0; border-top: 1px solid var(--ln); }
   .row .t { font-weight: 800; font-size: 18px; font-variant-numeric: tabular-nums; } .row .t small { display: block; font-size: 12px; color: var(--dim); font-weight: 500; }
   .free .t { color: var(--dim); font-weight: 600; } .free .who { color: var(--dim); }
@@ -129,7 +131,7 @@ var DEMO_NAME = "Драйв Бум";
       S.settings = r.settings; S.services = r.services; S.today = r.today;
       if (!S.date || S.date < S.today) S.date = S.today;
       return api({ action: "list", from: S.today, to: add(S.today, Math.max(14, r.settings.days)) }).then(function (r2) {
-        S.list = r2.list || []; S.err = false; S.at = hhmm(new Date().getHours() * 60 + new Date().getMinutes()); render();
+        S.list = r2.list || []; S.err = false; ding(); S.at = hhmm(new Date().getHours() * 60 + new Date().getMinutes()); render();
         var seen = false; try { seen = !!localStorage.getItem("bk_tour"); } catch (e) {}
         if (!seen && !window.NO_TOUR) setTimeout(tour, 400);
       });
@@ -157,9 +159,11 @@ var DEMO_NAME = "Драйв Бум";
         else if (!covered) body += '<div class="row free"><div class="t">' + t + '</div><div class="who">свободно</div></div>';
       }
     }
+    var nb = S.fresh.length ? '<a href="#" id="nb" class="nb">🔔 Новая запись: ' + S.fresh.map(function (b) { return +b.d.split("-")[2] + " " + MON[+b.d.split("-")[1] - 1] + " " + b.t + " — " + esc(b.name); }).join(", ") + "</a>" : "";
     app.innerHTML = '<div class="top"><h1>' + esc(st.name || "Расписание") + '</h1><small>Записи с сайта и добавленные вручную</small><button class="help" id="help" aria-label="Обучение">?</button></div>' +
-      '<div class="days">' + days + "</div><main><div class=\"stat\"><span>Записей: <b>" + live.length + "</b></span>" +
+      '<div class="days">' + days + "</div><main>" + nb + "<div class=\"stat\"><span>Записей: <b>" + live.length + "</b></span>" +
       (hrs ? "<span>Работаем: <b>" + hrs[0] + "–" + hrs[1] + "</b></span>" : "") + '<span><a href="#" id="rf" style="color:var(--a)">обновить</a> <small style="color:' + (S.err ? '#ff5a52">нет связи, пробую снова' : 'var(--dim)">обновлено в ' + S.at) + '</small></span>' +
+      '<span><a href="#" id="snd" style="color:var(--a)">' + (!SOUND ? "🔕 включить звук" : soundReady() ? "🔔 звук вкл. ✓" : "🔔 нажмите — включить звук") + "</a></span>" +
       ("wakeLock" in navigator ? '<span><a href="#" id="wk" style="color:var(--a)">' + (WAKE ? "экран не гаснет ✓" : "не гасить экран") + "</a></span>" : "") + '</div>' + body + "</main>" +
       '<button class="fab" id="addb">+ Добавить запись</button><div class="modal" id="m"></div>';
   }
@@ -232,6 +236,8 @@ var DEMO_NAME = "Драйв Бум";
     else if (b.id === "addb") addForm();
     else if (b.id === "rf") { e.preventDefault(); load(); }
     else if (b.id === "wk") { e.preventDefault(); WAKE = !WAKE; try { localStorage.setItem("bk_wake", WAKE ? "1" : ""); } catch (e2) {} keepAwake(); render(); }
+    else if (b.id === "snd") { e.preventDefault(); SOUND = !SOUND || !soundReady(); try { localStorage.setItem("bk_sound", SOUND ? "1" : ""); } catch (e2) {} if (SOUND) beep(1); render(); }
+    else if (b.id === "nb") { e.preventDefault(); S.date = S.fresh[0].d; S.fresh = []; document.title = TITLE; render(); }
     else if (b.id === "help") tour();
   });
   if ((!ENDPOINT && !DEMO) || !KEY) login(""); else load();
@@ -248,6 +254,29 @@ var DEMO_NAME = "Драйв Бум";
     if (!WAKE && lock) { lock.release(); lock = null; }
   }
   keepAwake();
+  // Звук при новой записи с сайта. Браузер разрешает звук только после нажатия на странице — поэтому кнопка «включить звук».
+  var SOUND = false, ctx = null, TITLE = document.title; try { SOUND = !!localStorage.getItem("bk_sound"); } catch (e) {}
+  S.fresh = []; S.seen = null;
+  function soundReady() { return ctx && ctx.state === "running"; }
+  function unlock() { try { ctx = ctx || new (window.AudioContext || window.webkitAudioContext)(); if (ctx.state !== "running") ctx.resume().then(function () { if (SOUND && S.list) render(); }); } catch (e) {} }
+  document.addEventListener("click", unlock, true); document.addEventListener("touchend", unlock, true);
+  function beep(n) {
+    if (!soundReady()) return;
+    for (var i = 0; i < n * 2; i++) {
+      var o = ctx.createOscillator(), g = ctx.createGain(), t = ctx.currentTime + i * 0.22;
+      o.frequency.value = i % 2 ? 1320 : 990; o.connect(g); g.connect(ctx.destination);
+      g.gain.setValueAtTime(0.001, t); g.gain.exponentialRampToValueAtTime(0.4, t + 0.02); g.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
+      o.start(t); o.stop(t + 0.21);
+    }
+  }
+  function ding() {
+    var ids = {}, fresh = [];
+    S.list.forEach(function (b) { ids[b.id] = 1; if (S.seen && !S.seen[b.id] && b.source === "сайт" && b.status !== "отменена") fresh.push(b); });
+    S.seen = ids;
+    if (!fresh.length) return;
+    S.fresh = S.fresh.concat(fresh); document.title = "🔔 Новая запись — " + TITLE;
+    if (SOUND) beep(3);
+  }
 })();
 </script>
 </body>

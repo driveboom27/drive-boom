@@ -103,8 +103,9 @@ var DEMO_NAME = "Драйв Бум";
       list[0].seed = td;
     }
     var save = function () { try { localStorage.setItem("bk_demo_admin", JSON.stringify(list)); } catch (e) {} };
-    if (b.action === "list") { save(); return { ok: true, today: td, settings: st, services: sv, list: list.filter(function (x) { return (!b.from || x.d >= b.from) && (!b.to || x.d <= b.to); }).sort(function (x, y) { return (x.d + x.t) < (y.d + y.t) ? -1 : 1; }) }; }
+    if (b.action === "list") { save(); return { ok: true, edit: true, today: td, settings: st, services: sv, list: list.filter(function (x) { return (!b.from || x.d >= b.from) && (!b.to || x.d <= b.to); }).sort(function (x, y) { return (x.d + x.t) < (y.d + y.t) ? -1 : 1; }) }; }
     if (b.action === "add") { list.push({ id: Math.random().toString(16).slice(2, 10), d: b.d, t: b.t, dur: b.dur, service: b.service, details: b.details, name: b.name, phone: b.phone, comment: "", status: "подтверждена", source: "вручную" }); save(); return { ok: true }; }
+    if (b.action === "edit") { list.forEach(function (x) { if (x.id === b.id) { x.d = b.d; x.t = b.t; x.dur = b.dur; x.service = b.service; x.details = b.details; x.name = b.name; x.phone = b.phone; } }); save(); return { ok: true }; }
     if (b.action === "status") { list.forEach(function (x) { if (x.id === b.id) x.status = b.status; }); save(); return { ok: true }; }
     return { ok: false, error: "?" };
   }
@@ -125,18 +126,24 @@ var DEMO_NAME = "Драйв Бум";
   }
 
   function load() {
-    var from = S.date ? add(S.date, -7) : null;
-    api({ action: "list", from: S.today ? S.today : undefined, to: S.today ? add(S.today, 30) : undefined }).then(function (r) {
-      if (!r.ok) { KEY = ""; try { localStorage.removeItem("bk_key"); } catch (e) {} return login(r.error); }
-      S.settings = r.settings; S.services = r.services; S.today = r.today;
+    var known = S.today && S.settings, to = function () { return add(S.today, Math.max(14, S.settings.days)); };
+    api(known ? { action: "list", from: S.today, to: to() } : { action: "list" }).then(function (r) {
+      if (!r.ok) {
+        if (r.error !== "Неверный пароль") return fail();   // «сервер занят» и т.п. — не выкидываем, через минуту попробуем снова
+        KEY = ""; try { localStorage.removeItem("bk_key"); } catch (e) {} return login(r.error);
+      }
+      var was = S.today; S.settings = r.settings; S.services = r.services; S.today = r.today; S.canEdit = !!r.edit;
       if (!S.date || S.date < S.today) S.date = S.today;
-      return api({ action: "list", from: S.today, to: add(S.today, Math.max(14, r.settings.days)) }).then(function (r2) {
-        S.list = r2.list || []; S.err = false; ding(); S.at = hhmm(new Date().getHours() * 60 + new Date().getMinutes()); render();
-        var seen = false; try { seen = !!localStorage.getItem("bk_tour"); } catch (e) {}
-        if (!seen && !window.NO_TOUR) setTimeout(tour, 400);
-      });
-    }).catch(function () { if (S.list) { S.err = true; render(); return; } app.innerHTML = '<div class="login"><h1>Нет связи</h1><p>Проверьте интернет — страница попробует снова через минуту.</p></div>'; });
+      if (known && was === r.today) return show(r);           // обычное обновление — один запрос вместо двух
+      return api({ action: "list", from: S.today, to: to() }).then(function (r2) { if (!r2.ok) return fail(); show(r2); });
+    }).catch(fail);
   }
+  function show(r) {
+    S.list = r.list || []; S.err = false; ding(); S.at = hhmm(new Date().getHours() * 60 + new Date().getMinutes()); render();
+    var seen = false; try { seen = !!localStorage.getItem("bk_tour"); } catch (e) {}
+    if (!seen && !window.NO_TOUR) setTimeout(tour, 400);
+  }
+  function fail() { if (S.list) { S.err = true; render(); return; } app.innerHTML = '<div class="login"><h1>Нет связи</h1><p>Проверьте интернет — страница попробует снова через минуту.</p></div>'; }
 
   function render() {
     var st = S.settings, days = "", n = Math.max(14, st.days);
@@ -175,23 +182,26 @@ var DEMO_NAME = "Драйв Бум";
       (b.comment ? "<br>«" + esc(b.comment) + "»" : "") + "</p>" + (b.status === "отменена" ? "" :
       '<div class="acts">' + (ph ? '<a href="tel:+' + ph + '">Позвонить</a><a class="wa" href="https://wa.me/' + ph + '" target="_blank">WhatsApp</a>' : "") +
       (b.status !== "выполнена" ? '<button data-s="выполнена" data-id="' + b.id + '">Готово</button>' : "") +
+      (S.canEdit ? '<button data-e="' + b.id + '">Изменить</button>' : "") +
       '<button class="x" data-s="отменена" data-id="' + b.id + '">Отменить</button></div>') + "</div>";
   }
-  function addForm() {
+  function addForm(eb) {
     var m = document.getElementById("m"), times = "", st = S.settings;
     for (var t = 0; t < 1440; t += st.step) times += "<option>" + hhmm(t) + "</option>";
-    m.innerHTML = '<div class="sheet"><h2>Запись по телефону</h2><div class="f">' +
-      '<label>Дата<input id="ad" type="date" value="' + S.date + '"></label><label>Время<select id="at">' + times + "</select></label>" +
-      '<label class="w">Услуга<select id="as">' + S.services.map(function (s, i) { return '<option value="' + i + '">' + esc(s.name) + " · " + s.dur + " мин</option>"; }).join("") + "</select></label>" +
-      '<label>Имя<input id="an"></label><label>Телефон<input id="ap" type="tel" placeholder="+7"></label>' +
-      '<label class="w">Машина / детали<input id="ax" placeholder="Camry R17"></label></div>' +
+    var svs = S.services.slice();
+    if (eb && !svs.some(function (s) { return s.name === eb.service; })) svs.unshift({ name: eb.service, dur: eb.dur });
+    m.innerHTML = '<div class="sheet"><h2>' + (eb ? "Изменить запись" : "Запись по телефону") + '</h2><div class="f">' +
+      '<label>Дата<input id="ad" type="date" value="' + (eb ? eb.d : S.date) + '"></label><label>Время<select id="at">' + times + "</select></label>" +
+      '<label class="w">Услуга<select id="as">' + svs.map(function (s, i) { return '<option value="' + i + '"' + (eb && s.name === eb.service ? " selected" : "") + ">" + esc(s.name) + " · " + s.dur + " мин</option>"; }).join("") + "</select></label>" +
+      '<label>Имя<input id="an" value="' + esc(eb ? eb.name : "") + '"></label><label>Телефон<input id="ap" type="tel" placeholder="+7" value="' + esc(eb ? eb.phone : "") + '"></label>' +
+      '<label class="w">Машина / детали<input id="ax" placeholder="Camry R17" value="' + esc(eb ? eb.details : "") + '"></label></div>' +
       '<button class="btn" id="asv">Сохранить</button><button class="btn ln" id="acl">Отмена</button><p class="msg" id="amsg"></p></div>';
     m.classList.add("on");
-    var first = S.list.length ? null : null; document.getElementById("at").value = S.settings.hours[new Date().getDay()] ? S.settings.hours[new Date().getDay()][0] : "09:00";
+    document.getElementById("at").value = eb ? eb.t : S.settings.hours[new Date().getDay()] ? S.settings.hours[new Date().getDay()][0] : "09:00";
     document.getElementById("acl").onclick = function () { m.classList.remove("on"); };
     document.getElementById("asv").onclick = function () {
-      var sv = S.services[+document.getElementById("as").value] || { name: "", dur: st.step };
-      api({ action: "add", d: document.getElementById("ad").value, t: document.getElementById("at").value, dur: sv.dur, service: sv.name,
+      var sv = svs[+document.getElementById("as").value] || { name: "", dur: st.step };
+      api({ action: eb ? "edit" : "add", id: eb ? eb.id : undefined, comment: eb ? eb.comment : undefined, d: document.getElementById("ad").value, t: document.getElementById("at").value, dur: sv.dur, service: sv.name,
             name: document.getElementById("an").value, phone: document.getElementById("ap").value, details: document.getElementById("ax").value })
         .then(function (r) { if (!r.ok) { document.getElementById("amsg").textContent = r.error; return; } S.date = document.getElementById("ad").value; m.classList.remove("on"); load(); });
     };
@@ -233,6 +243,7 @@ var DEMO_NAME = "Драйв Бум";
     var b = e.target.closest("button,a"); if (!b) return;
     if (b.dataset.d) { S.date = b.dataset.d; render(); }
     else if (b.dataset.s) { if (b.dataset.s === "отменена" && !confirm("Отменить запись?")) return; api({ action: "status", id: b.dataset.id, status: b.dataset.s }).then(load); }
+    else if (b.dataset.e) addForm(S.list.filter(function (x) { return x.id === b.dataset.e; })[0]);
     else if (b.id === "addb") addForm();
     else if (b.id === "rf") { e.preventDefault(); load(); }
     else if (b.id === "wk") { e.preventDefault(); WAKE = !WAKE; try { localStorage.setItem("bk_wake", WAKE ? "1" : ""); } catch (e2) {} keepAwake(); render(); }
